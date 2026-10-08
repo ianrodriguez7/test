@@ -2,6 +2,87 @@
 Each of the functions in this file takes a single line of input and transforms the line in some way.
 '''
 
+
+def _inside_inline_code(line, index):
+    '''
+    Return True if position `index` sits inside a `backtick` span.
+    Markdown markers inside inline code should be left alone.
+
+    >>> _inside_inline_code('a `*b*` c', 3)
+    True
+    >>> _inside_inline_code('a `*b*` c', 0)
+    False
+    '''
+    return line[:index].count('`') % 2 == 1 and '`' in line[index:]
+
+
+def _compile_delimited(line, delimiter, tag, skip_code=True, escape=False):
+    '''
+    Replace every `delimiter`text`delimiter` pair in line with <tag>text</tag>.
+    Unmatched delimiters and empty pairs are left unchanged.
+    If escape is True, < and > inside the pair become &lt; and &gt;.
+
+    >>> _compile_delimited('a *b* c *d', '*', 'i')
+    'a <i>b</i> c *d'
+    >>> _compile_delimited('```', '`', 'code', skip_code=False)
+    '```'
+    '''
+    size = len(delimiter)
+    result = ''
+    pos = 0
+    while True:
+        start = line.find(delimiter, pos)
+        while skip_code and start != -1 and _inside_inline_code(line, start):
+            start = line.find(delimiter, start + 1)
+        if start == -1:
+            break
+        end = line.find(delimiter, start + size)
+        while skip_code and end != -1 and _inside_inline_code(line, end):
+            end = line.find(delimiter, end + 1)
+        if end == -1:
+            break
+        content = line[start + size:end]
+        if content == '':
+            # an empty pair like `` is not markup; keep one character and move on
+            result += line[pos:start + 1]
+            pos = start + 1
+            continue
+        if escape:
+            content = content.replace('<', '&lt;').replace('>', '&gt;')
+        result += line[pos:start] + '<' + tag + '>' + content + '</' + tag + '>'
+        pos = end + size
+    return result + line[pos:]
+
+
+def _compile_bracketed(line, prefix, make_tag):
+    '''
+    Find `prefix[text](url)` patterns and replace them with make_tag(text, url).
+    Used by both links (prefix '[') and images (prefix '![').
+    '''
+    result = ''
+    pos = 0
+    while True:
+        start = line.find(prefix, pos)
+        if start == -1:
+            break
+        # a link should not swallow the "[" of an image
+        if prefix == '[' and start > 0 and line[start - 1] == '!':
+            result += line[pos:start + 1]
+            pos = start + 1
+            continue
+        middle = line.find('](', start + len(prefix))
+        if middle == -1:
+            break
+        end = line.find(')', middle + 2)
+        if end == -1:
+            break
+        text = line[start + len(prefix):middle]
+        url = line[middle + 2:end]
+        result += line[pos:start] + make_tag(text, url)
+        pos = end + 1
+    return result + line[pos:]
+
+
 def compile_headers(line):
     '''
     Convert markdown headers into <h1>,<h2>,etc tags.
@@ -26,6 +107,11 @@ def compile_headers(line):
     >>> compile_headers('      # this is not a header')
     '      # this is not a header'
     '''
+    hashes = 0
+    while hashes < len(line) and line[hashes] == '#':
+        hashes += 1
+    if 1 <= hashes <= 6 and line[hashes:hashes + 1] == ' ':
+        return '<h' + str(hashes) + '>' + line[hashes:] + '</h' + str(hashes) + '>'
     return line
 
 
@@ -50,7 +136,7 @@ def compile_italic_star(line):
     >>> compile_italic_star('*')
     '*'
     '''
-    return line
+    return _compile_delimited(line, '*', 'i')
 
 
 def compile_italic_underscore(line):
@@ -71,7 +157,7 @@ def compile_italic_underscore(line):
     >>> compile_italic_underscore('_')
     '_'
     '''
-    return line
+    return _compile_delimited(line, '_', 'i')
 
 
 def compile_strikethrough(line):
@@ -94,7 +180,7 @@ def compile_strikethrough(line):
     >>> compile_strikethrough('~~')
     '~~'
     '''
-    return line
+    return _compile_delimited(line, '~~', 'ins')
 
 
 def compile_bold_stars(line):
@@ -115,7 +201,7 @@ def compile_bold_stars(line):
     >>> compile_bold_stars('**')
     '**'
     '''
-    return line
+    return _compile_delimited(line, '**', 'b')
 
 
 def compile_bold_underscore(line):
@@ -136,7 +222,7 @@ def compile_bold_underscore(line):
     >>> compile_bold_underscore('__')
     '__'
     '''
-    return line
+    return _compile_delimited(line, '__', 'b')
 
 
 def compile_code_inline(line):
@@ -166,7 +252,7 @@ def compile_code_inline(line):
     >>> compile_code_inline('```python3')
     '```python3'
     '''
-    return line
+    return _compile_delimited(line, '`', 'code', skip_code=False, escape=True)
 
 
 def compile_links(line):
@@ -186,7 +272,8 @@ def compile_links(line):
     >>> compile_links('this is wrong: [course webpage](https://github.com/mikeizbicki/cmc-csci040')
     'this is wrong: [course webpage](https://github.com/mikeizbicki/cmc-csci040'
     '''
-    return line
+    return _compile_bracketed(
+        line, '[', lambda text, url: '<a href="' + url + '">' + text + '</a>')
 
 
 def compile_images(line):
@@ -205,4 +292,5 @@ def compile_images(line):
     >>> compile_images('This is an image of Mike Izbicki: ![Mike Izbicki](https://avatars1.githubusercontent.com/u/1052630?v=2&s=460)')
     'This is an image of Mike Izbicki: <img src="https://avatars1.githubusercontent.com/u/1052630?v=2&s=460" alt="Mike Izbicki" />'
     '''
-    return line
+    return _compile_bracketed(
+        line, '![', lambda text, url: '<img src="' + url + '" alt="' + text + '" />')

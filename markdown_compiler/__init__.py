@@ -3,7 +3,37 @@ This file contains functions that work on entire documents at a time
 (and not line-by-line).
 '''
 
-from markdown_compiler.util.line_functions import *
+import re
+
+from markdown_compiler.util.line_functions import (
+    compile_bold_stars,
+    compile_bold_underscore,
+    compile_code_inline,
+    compile_headers,
+    compile_images,
+    compile_italic_star,
+    compile_italic_underscore,
+    compile_links,
+    compile_strikethrough,
+)
+
+
+def compile_inline(line):
+    '''
+    Apply every single-line markdown transformation except headers.
+
+    >>> compile_inline('a **b** _c_ `d` [e](f)')
+    'a <b>b</b> <i>c</i> <code>d</code> <a href="f">e</a>'
+    '''
+    line = compile_strikethrough(line)
+    line = compile_bold_stars(line)
+    line = compile_bold_underscore(line)
+    line = compile_italic_star(line)
+    line = compile_italic_underscore(line)
+    line = compile_code_inline(line)
+    line = compile_images(line)
+    line = compile_links(line)
+    return line
 
 
 def compile_lines(text):
@@ -129,30 +159,127 @@ def compile_lines(text):
         print('i=',i)
     </pre>
     <BLANKLINE>
+
+    NOTE:
+    This third set of test cases tests ordered (numbered) lists.
+
+    A one-item list:
+
+    >>> print(compile_lines("""
+    ... 1. only item
+    ... """))
+    <BLANKLINE>
+    <ol>
+    <li>only item</li>
+    </ol>
+
+    A multi-item list:
+
+    >>> print(compile_lines("""
+    ... 1. this
+    ... 2. is
+    ... 3. a
+    ... 4. list
+    ... """))
+    <BLANKLINE>
+    <ol>
+    <li>this</li>
+    <li>is</li>
+    <li>a</li>
+    <li>list</li>
+    </ol>
+
+    A list next to ordinary paragraphs:
+
+    >>> print(compile_lines("""
+    ... Here is a list:
+    ... 1. first
+    ... 2. **second**
+    ...
+    ... A paragraph after it.
+    ... """))
+    <BLANKLINE>
+    <p>
+    Here is a list:
+    </p>
+    <ol>
+    <li>first</li>
+    <li><b>second</b></li>
+    </ol>
+    <p>
+    A paragraph after it.
+    </p>
     '''
     lines = text.split('\n')
     new_lines = []
     in_paragraph = False
-    for line in lines:
-        line = line.strip()
-        if line=='':
+    in_pre = False
+    in_list = False
+    for raw_line in lines:
+        line = raw_line.strip()
+
+        # inside a fenced code block: keep the line exactly as written
+        # (indentation included), only escaping html characters
+        if in_pre:
+            if line.startswith('```'):
+                in_pre = False
+                new_lines.append('</pre>')
+            else:
+                code = raw_line.rstrip('\r')
+                code = code.replace('<', '&lt;').replace('>', '&gt;')
+                new_lines.append(code)
+            continue
+
+        # a fence opens a code block (any language tag after ``` is ignored)
+        if line.startswith('```'):
+            if in_list:
+                new_lines.append('</ol>')
+                in_list = False
+            in_pre = True
+            new_lines.append('<pre>')
+            continue
+
+        # ordered list items look like "1. text"
+        item = re.match(r'\d+\. ', line)
+        if item:
             if in_paragraph:
-                line='</p>'
+                new_lines.append('</p>')
+                in_paragraph = False
+            start = '' if in_list else '<ol>\n'
+            in_list = True
+            new_lines.append(start + '<li>' + compile_inline(line[item.end():]) + '</li>')
+            continue
+        if in_list:
+            in_list = False
+            if line == '':
+                new_lines.append('</ol>')
+                continue
+            new_lines.append('</ol>')
+
+        if line == '':
+            if in_paragraph:
+                line = '</p>'
                 in_paragraph = False
         else:
-            if line[0] != '#' and not in_paragraph:
+            header = compile_headers(line)
+            if header != line:
+                if in_paragraph:
+                    new_lines.append('</p>')
+                    in_paragraph = False
+                line = header
+            elif not in_paragraph:
                 in_paragraph = True
-                line = '<p>\n'+line
-            line = compile_headers(line)
-            line = compile_strikethrough(line)
-            line = compile_bold_stars(line)
-            line = compile_bold_underscore(line)
-            line = compile_italic_star(line)
-            line = compile_italic_underscore(line)
-            line = compile_code_inline(line)
-            line = compile_images(line)
-            line = compile_links(line)
+                line = '<p>\n' + line
+            line = compile_inline(line)
         new_lines.append(line)
+
+    # close anything still open at the end of the document
+    if in_pre:
+        new_lines.append('</pre>')
+    if in_list:
+        new_lines.append('</ol>')
+    if in_paragraph:
+        new_lines.append('</p>')
     new_text = '\n'.join(new_lines)
     return new_text
 
@@ -189,10 +316,10 @@ def markdown_to_html(markdown, add_css):
 <link rel="stylesheet" href="https://izbicki.me/css/code.css" />
 <link rel="stylesheet" href="https://izbicki.me/css/default.css" />
         '''
-    html+='''
+    html += '''
 </head>
 <body>
-    '''+compile_lines(markdown)+'''
+    ''' + compile_lines(markdown) + '''
 </body>
 </html>
     '''
@@ -227,7 +354,7 @@ def minify(html):
     >>> minify('a\n\n\n\n\n\n\n\n\n\n\n\n\n\nb\n\n\n\n\n\n\n\n\n\n')
     'a b'
     '''
-    return html
+    return ' '.join(html.split())
 
 
 def convert_file(input_file, add_css):
@@ -254,5 +381,5 @@ def convert_file(input_file, add_css):
     # Keep code-block newlines and indentation in the saved page.
 
     # write the output file
-    with open(input_file[:-2]+'html', 'w', encoding='utf-8') as f:
+    with open(input_file[:-2] + 'html', 'w', encoding='utf-8') as f:
         f.write(html)
